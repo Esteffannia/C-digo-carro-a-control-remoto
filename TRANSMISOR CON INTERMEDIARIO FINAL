@@ -1,0 +1,80 @@
+#TRANSMISOR 
+import time
+import board
+import analogio
+import digitalio
+import wifi
+import socketpool
+
+# Wi-Fi Configuration
+SSID = "Galaxy A54"  # Replace with your Wi-Fi SSID
+PASSWORD = "mvba31571"  # Replace with your Wi-Fi password
+
+# Server Configuration
+HOST = "192.168.67.80"  # Replace with the IP address of the receiver
+PORT = 8080  # Use the same port on the receiver
+
+def get_voltage(pin):
+    # Convert the raw analog reading to voltage
+    return (pin.value * 3.3) / 65536
+
+def connect_to_wifi():
+    while not wifi.radio.connected:
+        try:
+            wifi.radio.connect(SSID, PASSWORD)
+            print(f"Connected to {SSID}!")
+        except Exception as e:
+            print(f"Failed to connect to Wi-Fi: {e}")
+            time.sleep(5)
+
+def connect_to_server():
+    pool = socketpool.SocketPool(wifi.radio)
+    sock = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
+    try:
+        sock.connect((HOST, PORT))
+        print(f"Connected to {HOST}:{PORT}")
+        return sock
+    except Exception as e:
+        print(f"Failed to connect to server: {e}")
+        return None
+
+# Initialize the joystick's analog inputs
+x_axis = analogio.AnalogIn(board.A0)  # Connected to ADC0
+y_axis = analogio.AnalogIn(board.A1)  # Connected to ADC1
+
+# Initialize the push button digital input
+button = digitalio.DigitalInOut(board.GP22)
+button.direction = digitalio.Direction.INPUT
+button.pull = digitalio.Pull.UP  # Assuming the button is connected to GND when pressed
+
+connect_to_wifi()
+
+while True:
+    sock = connect_to_server()
+    
+    if sock is None:
+        time.sleep(5)
+        continue
+    
+    try:
+        while True:
+            # Read the X and Y positions of the joystick
+            x_value = get_voltage(x_axis)
+            y_value = get_voltage(y_axis)
+
+            # Read the state of the push button (True = not pressed, False = pressed)
+            button_state = not button.value
+
+            # Create a data string to send
+            data = f"{x_value:.2f},{y_value:.2f},{button_state}\n"
+            
+            # Send the data via socket
+            sock.send(data.encode('utf-8'))
+
+            # Wait for 1 second
+            time.sleep(1)
+    
+    except OSError as e:
+        print(f"Connection error: {e}")
+        sock.close()
+        time.sleep(5)  # Esperar antes de intentar reconectar
