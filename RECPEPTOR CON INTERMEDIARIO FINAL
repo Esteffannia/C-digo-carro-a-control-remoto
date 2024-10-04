@@ -1,0 +1,175 @@
+#RECEPTOR, MOTOR, VALOR XY EN OLED
+import wifi
+import socketpool
+import time
+import board
+import busio
+import digitalio
+import displayio
+import terminalio
+from adafruit_display_text import label
+from adafruit_displayio_ssd1306 import SSD1306
+
+# Wi-Fi Configuration
+SSID = "Galaxy A54"  # Replace with your Wi-Fi SSID
+PASSWORD = "mvba31571"  # Replace with your Wi-Fi password
+
+# Server Configuration
+PORT = 8080  # Must match the PORT used by the transmitter
+
+# Connect to Wi-Fi
+wifi.radio.connect(SSID, PASSWORD)
+print(f"Connected to {SSID} with IP address: {wifi.radio.ipv4_address}")
+
+# Initialize the socket
+pool = socketpool.SocketPool(wifi.radio)
+server_socket = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
+
+# Bind the socket to the IP address and port
+server_socket.bind((str(wifi.radio.ipv4_address), PORT))
+server_socket.listen(1)
+print(f"Server listening on {wifi.radio.ipv4_address}:{PORT}")
+
+# Inicialización de pines para controlar el motor
+Motor_A_Forward = digitalio.DigitalInOut(board.GP10)
+Motor_A_Forward.direction = digitalio.Direction.OUTPUT
+
+Motor_A_Backward = digitalio.DigitalInOut(board.GP11)
+Motor_A_Backward.direction = digitalio.Direction.OUTPUT
+
+Motor_B_Forward = digitalio.DigitalInOut(board.GP12)
+Motor_B_Forward.direction = digitalio.Direction.OUTPUT
+
+Motor_B_Backward = digitalio.DigitalInOut(board.GP13)
+Motor_B_Backward.direction = digitalio.Direction.OUTPUT
+
+def Forward():
+    Motor_A_Forward.value = True
+    Motor_B_Forward.value = False
+    Motor_A_Backward.value = False
+    Motor_B_Backward.value = True
+
+def Backward():
+    Motor_A_Forward.value = False
+    Motor_B_Forward.value = True
+    Motor_A_Backward.value = True
+    Motor_B_Backward.value = False
+
+def Stop():
+    Motor_A_Forward.value = False
+    Motor_B_Forward.value = False
+    Motor_A_Backward.value = False
+    Motor_B_Backward.value = False
+
+def Left():
+    Motor_A_Forward.value = True
+    Motor_B_Forward.value = False
+    Motor_A_Backward.value = False
+    Motor_B_Backward.value = False
+
+def Right():
+    Motor_A_Forward.value = False
+    Motor_B_Forward.value = False
+    Motor_A_Backward.value = False
+    Motor_B_Backward.value = True
+
+# Inicializar el motor detenido
+Stop()
+
+# Definir un margen de tolerancia para las comparaciones
+tolerance = 0.05
+
+# Configuración del bus I2C para la pantalla OLED
+i2c = busio.I2C(board.GP17, board.GP16)
+display_bus = displayio.I2CDisplay(i2c, device_address=0x3C)
+display = SSD1306(display_bus, width=128, height=32)
+
+# Crear un grupo de displayio
+splash = displayio.Group()
+display.root_group = splash
+
+# Texto en el display
+ip_address = str(wifi.radio.ipv4_address)  # Dirección IP del dispositivo
+text_area_ip = label.Label(terminalio.FONT, text=f"IP: {ip_address}", color=0xFFFFFF, x=0, y=5)
+text_area_command = label.Label(terminalio.FONT, text="Valores: ", color=0xFFFFFF, x=0, y=20)
+
+# Agregar las etiquetas al grupo de display
+splash.append(text_area_ip)
+splash.append(text_area_command)
+
+def update_display(x_value, y_value):
+    global text_area_command
+    command_text = f"x: {x_value}, y: {y_value}"
+    text_area_command.text = command_text
+
+def handle_client(client_socket):
+    try:
+        while True:
+            # Receive the data from the client
+            buffer = bytearray(1024)  # Create a mutable buffer
+            bytes_received = client_socket.recv_into(buffer)  # Receive data into the buffer
+
+            if bytes_received == 0:
+                print("Client disconnected.")
+                break  # Break the loop if the client disconnects
+
+            # Decode the data received
+            data = buffer[:bytes_received].decode('utf-8').strip()
+            print(f"Received data: {data}")
+
+            # Validate the format: check if there are exactly 3 components separated by commas
+            components = data.split(',')
+            if len(components) == 3:
+                x_value = float(components[0])
+                y_value = float(components[1])
+                button_state = components[2]  # True or False for button press
+
+                # Movimiento del carro basado en los valores recibidos
+                x_valuefinal = round(x_value, 2)
+                y_valuefinal = round(y_value, 2)
+
+                # Mostrar valores x e y en la pantalla OLED
+                update_display(x_valuefinal, y_valuefinal)
+
+                if (abs(x_valuefinal - 1.68) < tolerance and abs(y_valuefinal - 1.67) < tolerance):
+                    Stop()
+                elif (x_valuefinal > 1.68 and abs(y_valuefinal - 1.67) < tolerance):
+                    Forward()
+                    time.sleep(0.2)  # Mantiene el giro a la derecha por 0.1 segundos
+                    Stop()  # Detiene el motor
+                elif (x_valuefinal < 1.68 and abs(y_valuefinal - 1.67) < tolerance):
+                    Backward()
+                    time.sleep(0.2)  # Mantiene el giro a la derecha por 0.1 segundos
+                    Stop()  # Detiene el motor                    
+                elif (abs(x_valuefinal - 1.68) < tolerance and y_valuefinal > 1.67):
+                    Right()
+                    time.sleep(0.2)  # Mantiene el giro a la derecha por 0.1 segundos
+                    Stop()  # Detiene el motor                       
+                elif (abs(x_valuefinal - 1.68) < tolerance and y_valuefinal < 1.67):
+                    Left()
+                    time.sleep(0.2)  # Mantiene el giro a la derecha por 0.1 segundos
+                    Stop()  # Detiene el motor   
+                print(x_valuefinal, y_valuefinal)
+
+            else:
+                print("Invalid data format received, skipping this packet.")
+            
+    except OSError as e:
+        print(f"Connection error: {e}")
+    finally:
+        client_socket.close()
+
+while True:
+    try:
+        # Wait for a connection
+        client_socket, client_address = server_socket.accept()
+        print(f"Connection from {client_address} has been established!")
+        
+        # Handle the client in a loop
+        handle_client(client_socket)
+
+    except Exception as e:
+        print(f"Error accepting client: {e}")
+        time.sleep(5)  # Wait before trying to accept another connection
+
+server_socket.close()
